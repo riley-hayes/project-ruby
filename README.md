@@ -1,4 +1,6 @@
 # project-ruby
-Project Ruby is an in-car entertainment system designed to integrate with Google Maps, Spotify and an in car OBD2 reader to report back in car telemetry
+Codename: Project Ruby is an in-car telemetry reporting system designed to integrate with virtually any CANBus enabled vehicle 
 
-This is developed for use with a Microsoft Surface Pro 3, however this should work with any x86_64 compatible tablet (preferably a 2-in-1 style tablet, like a Surface).
+This has been programmed with a Raspberry Pi in mind, utilising a cheap CANBus to USB Adapter found on AliExpress, and using SocketCAN to expose a CAN adapter to the networking stack.
+
+No warranties - you're on your own if you blow up your vehicle or fry your ECU.

@@ -1,0 +1,7 @@
+influxdb:
+  url: "https://example.com"
+  token: "insert-token"
+  org: "insert-org"
+  bucket: "insert-bucket"
+
+can_interface: "can0"
