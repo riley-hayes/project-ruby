@@ -1,4 +1,5 @@
 import can
+import cantools
 import time
 import yaml
 from influxdb_client import InfluxDBClient, Point, WritePrecision
@@ -10,6 +11,10 @@ with open("config.yaml", "r") as file:
 
 influxdb_config = config['influxdb']
 can_interface = config['can_interface']
+dbc_path = config['dbc_path']  # Path to your DBC file
+
+# Load DBC file
+db = cantools.database.load_file(dbc_path)
 
 # InfluxDB client setup
 client = InfluxDBClient(url=influxdb_config['url'], token=influxdb_config['token'], org=influxdb_config['org'])
@@ -27,12 +32,15 @@ try:
         message = bus.recv()
 
         if message:
+            decoded_message = db.decode_message(message.arbitration_id, message.data)
             point = Point("can_message") \
                 .tag("interface", can_interface) \
-                .field("id_hex", message.arbitration_id) \
-                .field("length", len(message.data)) \
-                .field("payload", ' '.join(format(byte, '02X') for byte in message.data)) \
                 .time(time.time_ns(), WritePrecision.NS)
+            
+            # Add each decoded field as a separate field in the point
+            for key, value in decoded_message.items():
+                point = point.field(key, value)
+
             messages.append(point)
 
         current_time = time.time()
