@@ -27,31 +27,44 @@ try:
     print(f"Listening on {can_interface} and logging to InfluxDB...")
 
     messages = []
+    unknown_messages = []
 
     while True:
         message = bus.recv()
 
         if message:
-            decoded_message = db.decode_message(message.arbitration_id, message.data)
-            point = Point("can_message") \
-                .tag("interface", can_interface) \
-                .time(time.time_ns(), WritePrecision.NS)
-            
-            # Add each decoded field as a separate field in the point
-            for key, value in decoded_message.items():
-                point = point.field(key, value)
+            try:
+                decoded_message = db.decode_message(message.arbitration_id, message.data)
+                point = Point("can_message") \
+                    .tag("interface", can_interface) \
+                    .time(time.time_ns(), WritePrecision.NS)
 
-            messages.append(point)
+                for key, value in decoded_message.items():
+                    point = point.field(key, value)
+                messages.append(point)
+            except KeyError:
+                # Log unknown message IDs to a separate measurement or tag them differently
+                unknown_point = Point("unknown_can_message") \
+                    .tag("interface", can_interface) \
+                    .field("arbitration_id", message.arbitration_id) \
+                    .field("raw_data", ' '.join(format(byte, '02X') for byte in message.data)) \
+                    .time(time.time_ns(), WritePrecision.NS)
+                unknown_messages.append(unknown_point)
+                print(f"Logged unknown message with ID {message.arbitration_id}")
 
         current_time = time.time()
         elapsed_time = current_time - start_time
-        message_count = len(messages)
+        message_count = len(messages) + len(unknown_messages)
 
         print(f"{elapsed_time} has elapsed, and this is the amount of messages: {message_count}")
 
         if elapsed_time > 4 or message_count >= 600:
-            write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages)
+            if messages:
+                write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages)
+            if unknown_messages:
+                write_api.write(influxdb_config['bucket'], influxdb_config['org'], unknown_messages)
             messages.clear()
+            unknown_messages.clear()
             start_time = current_time
 
 except KeyboardInterrupt:
