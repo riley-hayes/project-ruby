@@ -8,6 +8,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 import os
 import pickle
 import glob
+from urllib.parse import urlparse
 
 # Load configuration from YAML file
 with open("config.yaml", "r") as file:
@@ -67,8 +68,11 @@ def save_data_locally(data):
     print(f"Data saved locally to {filename}.")
 
 def check_connection():
-    """Check if there is an internet connection available."""
-    return os.system("ping -c 1 google.com") == 0
+    """Check if there is an internet connection available to the InfluxDB server."""
+    parsed_url = urlparse(influxdb_config['url'])
+    hostname = parsed_url.hostname
+    return os.system(f"ping -c 1 {hostname}") == 0
+
 
 # Start the thread for resending stored data
 threading.Thread(target=resend_stored_data, daemon=True).start()
