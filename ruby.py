@@ -24,47 +24,43 @@ bus = can.interface.Bus(channel=can_interface, bustype='socketcan', buffer_size=
 start_time = time.time()
 
 try:
-    print(f"Listening on {can_interface} and logging to InfluxDB...")
-
-    messages = []
-    unknown_messages = []
-
+    messages = []  # Initialize the list to store message points before batching to InfluxDB
     while True:
         message = bus.recv()
-
         if message:
+            # Decode message if possible
             try:
                 decoded_message = db.decode_message(message.arbitration_id, message.data)
-                point = Point("can_message") \
+                decoded_point = Point("can_message") \
                     .tag("interface", can_interface) \
+                    .tag("id_hex", f"{message.arbitration_id:08X}") \
                     .time(time.time_ns(), WritePrecision.NS)
 
                 for key, value in decoded_message.items():
-                    point = point.field(key, value)
-                messages.append(point)
+                    decoded_point = decoded_point.field(key, value)
+
+                messages.append(decoded_point)
             except KeyError:
-                # Log unknown message IDs to a separate measurement or tag them differently
-                unknown_point = Point("unknown_can_message") \
-                    .tag("interface", can_interface) \
-                    .field("arbitration_id", message.arbitration_id) \
-                    .field("raw_data", ' '.join(format(byte, '02X') for byte in message.data)) \
-                    .time(time.time_ns(), WritePrecision.NS)
-                unknown_messages.append(unknown_point)
-                print(f"Logged unknown message with ID {message.arbitration_id}")
+                # If message is not defined in DBC file, log raw data
+                pass
+
+            # Log raw data separately
+            raw_data = ' '.join(format(byte, '02X') for byte in message.data)
+            raw_point = Point("raw_can_message") \
+                .tag("interface", can_interface) \
+                .tag("id_hex", f"{message.arbitration_id:08X}") \
+                .field("raw_payload", raw_data) \
+                .time(time.time_ns(), WritePrecision.NS)
+
+            messages.append(raw_point)
 
         current_time = time.time()
         elapsed_time = current_time - start_time
-        message_count = len(messages) + len(unknown_messages)
-
-        print(f"{elapsed_time} has elapsed, and this is the amount of messages: {message_count}")
+        message_count = len(messages)
 
         if elapsed_time > 4 or message_count >= 600:
-            if messages:
-                write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages)
-            if unknown_messages:
-                write_api.write(influxdb_config['bucket'], influxdb_config['org'], unknown_messages)
+            write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages)
             messages.clear()
-            unknown_messages.clear()
             start_time = current_time
 
 except KeyboardInterrupt:
