@@ -80,6 +80,7 @@ threading.Thread(target=resend_stored_data, daemon=True).start()
 messages = []  # Initialize the list to store message points before batching to InfluxDB
 
 try:
+    print(f"Logging to InfluxDB...")
     while True:
         message = bus.recv()
         if message:
