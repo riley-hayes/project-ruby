@@ -10,117 +10,80 @@ import pickle
 import glob
 from urllib.parse import urlparse
 
+from threading import Lock
+
 # Load configuration from YAML file
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
+# Database and CAN settings
 influxdb_config = config['influxdb']
-can_interface = config['can_interface']
 dbc_path = config['dbc_path']
-
-# Load DBC file
 db = cantools.database.load_file(dbc_path)
 
 # InfluxDB client setup
 client = InfluxDBClient(url=influxdb_config['url'], token=influxdb_config['token'], org=influxdb_config['org'])
 write_api = client.write_api(write_options=SYNCHRONOUS)
 
-bus = can.interface.Bus(channel=can_interface, bustype='socketcan', buffer_size=10000)
-start_time = time.time()
+# Thread-safe message storage
+messages = []
+messages_lock = Lock()
 
-def resend_stored_data():
-    """Resend data that was saved locally due to connection issues."""
-    while True:
-        try:
-            for filename in glob.glob("data_backup_*.pkl"):
-                with open(filename, 'rb') as f:
-                    data = pickle.load(f)
-                if check_connection():
-                    write_to_influx(data)
-                    os.remove(filename)
-                    print(f"Resent data and deleted {filename}.")
-                time.sleep(60)  # Avoid too frequent checks
-        except Exception as e:
-            print(f"Error resending data: {e}")
-        time.sleep(60)  # Wait a minute before checking again
+def can_bus_listener(can_interface, control_flag, messages):
+    bus = can.interface.Bus(channel=can_interface, bustype='socketcan', buffer_size=10000)
+    try:
+        while control_flag[can_interface]:
+            message = bus.recv()
+            if message:
+                process_message(message, can_interface, messages)
+    except Exception as e:
+        print(f"Exception in listener {can_interface}: {e}")
+    finally:
+        bus.shutdown()
 
-def write_to_influx(messages_to_write):
-    """Handle writing data to InfluxDB with retry logic."""
-    max_attempts = 5
-    attempt = 0
-    while attempt < max_attempts:
-        try:
-            if check_connection():
-                write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages_to_write)
-                print("Data written successfully.")
-                return
-        except Exception as e:
-            print(f"Failed to write data: {e}")
-            attempt += 1
-            time.sleep(10)  # Wait before retrying
-    save_data_locally(messages_to_write)
+def process_message(message, can_interface, messages):
+    try:
+        decoded_message = db.decode_message(message.arbitration_id, message.data)
+        decoded_point = Point("can_message").tag("interface", can_interface).tag("id_hex", f"{message.arbitration_id:08X}").time(time.time_ns(), WritePrecision.NS)
+        for key, value in decoded_message.items():
+            decoded_point = decoded_point.field(key, value)
+        
+        with messages_lock:
+            messages.append(decoded_point)
+    except KeyError:
+        pass  # Optionally log raw data here
 
-def save_data_locally(data):
-    """Save data to a local file when unable to send to the server."""
-    filename = f"data_backup_{int(time.time())}.pkl"
-    with open(filename, 'wb') as f:
-        pickle.dump(data, f)
-    print(f"Data saved locally to {filename}.")
+# Thread management
+threads = {}
+control_flags = {conf['interface_name']: conf['enabled'] for conf in config['can_interfaces']}
 
-def check_connection():
-    """Check if there is an internet connection available to the InfluxDB server."""
-    parsed_url = urlparse(influxdb_config['url'])
-    hostname = parsed_url.hostname
-    return os.system(f"ping -c 1 {hostname}") == 0
+def toggle_can_interface(interface_name, state):
+    control_flags[interface_name] = state
+    if state and interface_name not in threads:
+        thread = threading.Thread(target=can_bus_listener, args=(interface_name, control_flags, messages), daemon=True)
+        threads[interface_name] = thread
+        thread.start()
+    elif not state:
+        threads.pop(interface_name, None)
 
-
-# Start the thread for resending stored data
-threading.Thread(target=resend_stored_data, daemon=True).start()
-
-messages = []  # Initialize the list to store message points before batching to InfluxDB
+# Start threads based on configuration
+for interface_config in config['can_interfaces']:
+    if interface_config['enabled']:
+        toggle_can_interface(interface_config['interface_name'], True)
 
 try:
-    print(f"Logging to InfluxDB...")
     while True:
-        message = bus.recv()
-        if message:
-            # Decode message if possible
-            try:
-                decoded_message = db.decode_message(message.arbitration_id, message.data)
-                decoded_point = Point("can_message") \
-                    .tag("interface", can_interface) \
-                    .tag("id_hex", f"{message.arbitration_id:08X}") \
-                    .time(time.time_ns(), WritePrecision.NS)
-
-                for key, value in decoded_message.items():
-                    decoded_point = decoded_point.field(key, value)
-
-                messages.append(decoded_point)
-            except KeyError:
-                # If message is not defined in DBC file, log raw data
-                pass
-
-            # Log raw data separately
-            raw_data = ' '.join(format(byte, '02X') for byte in message.data)
-            raw_point = Point("raw_can_message") \
-                .tag("interface", can_interface) \
-                .tag("id_hex", f"{message.arbitration_id:08X}") \
-                .field("raw_payload", raw_data) \
-                .time(time.time_ns(), WritePrecision.NS)
-
-            messages.append(raw_point)
-
-        current_time = time.time()
-        elapsed_time = current_time - start_time
-        message_count = len(messages)
-
-        if elapsed_time > 10 or message_count >= 20000:
-            threading.Thread(target=write_to_influx, args=(messages.copy(),)).start()
-            messages.clear()
-            start_time = current_time
-
+        with messages_lock:
+            if messages:
+                write_api.write(influxdb_config['bucket'], influxdb_config['org'], messages.copy())
+                messages.clear()
+        time.sleep(10)  # Adjust the frequency of writes as needed
 except KeyboardInterrupt:
     print("\nScript terminated by user.")
 finally:
+    for flag in control_flags:
+        control_flags[flag] = False  # Signal all threads to stop
+    for thread in threads.values():
+        thread.join()  # Wait for all threads to finish
     client.close()
-    bus.shutdown()
+
