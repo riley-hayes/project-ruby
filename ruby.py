@@ -54,17 +54,25 @@ def influxdb_writer(write_queue, influxdb_config):
     client = InfluxDBClient(url=influxdb_config['url'], token=influxdb_config['token'], org=influxdb_config['org'])
     write_api = client.write_api(write_options=SYNCHRONOUS)
     try:
-        while True:
+        while True:  # Continuously run
             try:
-                points = write_queue.get(timeout=10)
-                if points is None:
-                    break
-                write_api.write(influxdb_config['bucket'], influxdb_config['org'], points)
-                write_queue.task_done()
-            except Empty:
-                continue
+                if not write_queue.empty():
+                    points = []
+                    while not write_queue.empty():  # Gather all points currently in the queue
+                        points.extend(write_queue.get_nowait())
+                        write_queue.task_done()
+
+                    if points:
+                        write_api.write(influxdb_config['bucket'], influxdb_config['org'], points)
+                        print(f"Sent {len(points)} points to InfluxDB.")
+                time.sleep(5)  # Wait for 5 seconds before checking again
+            except Exception as e:
+                print(f"Error writing to InfluxDB: {e}")
+                continue  # Continue processing in case of an error
     finally:
         client.close()
+        print("InfluxDB connection closed.")
+
 
 # Start threads based on configuration
 threads = {}
