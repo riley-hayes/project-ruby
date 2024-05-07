@@ -1,9 +1,12 @@
+can_interfaces:
+  - interface_name: can0
+    enabled: true
+    dbc_path: 'path_to_can0_dbc_file.dbc'
+  - interface_name: can1
+    enabled: true
+    dbc_path: 'path_to_can1_dbc_file.dbc'
 influxdb:
-  url: "https://example.com"
-  token: "insert-token"
-  org: "insert-org"
-  bucket: "insert-bucket"
-
-can_interface: "can0"
-
-dbc_path: "example.dbc"
+  url: 'http://localhost:8086'
+  token: 'YourToken'
+  org: 'YourOrg'
+  bucket: 'YourBucket'
