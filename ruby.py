@@ -30,6 +30,7 @@ def can_bus_listener(can_interface, control_flag, messages):
     bus = can.interface.Bus(channel=can_interface, bustype='socketcan', buffer_size=10000)
     db = dbc_databases[can_interface]
     try:
+        print(f"Started listening on {can_interface}")
         while control_flag[can_interface]:
             message = bus.recv()
             if message:
@@ -44,6 +45,8 @@ def process_message(message, can_interface, db, messages):
         decoded_message = db.decode_message(message.arbitration_id, message.data)
         decoded_point = Point("can_message").tag("interface", can_interface).tag("id_hex", f"{message.arbitration_id:08X}").time(time.time_ns(), WritePrecision.NS)
         for key, value in decoded_message.items():
+            # Check if the value is a NamedSignalValue and convert it
+            if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue):                value = value.physical_value  # Or `str(value)` if you prefer the name rather than the number
             decoded_point = decoded_point.field(key, value)
         
         with messages_lock:
@@ -54,7 +57,7 @@ def process_message(message, can_interface, db, messages):
         
         with messages_lock:
             messages.append(raw_point)
-        print(f"Logged raw data for unknown message ID {message.arbitration_id:08X} on {can_interface}.")
+        #print(f"Logged raw data for unknown message ID {message.arbitration_id:08X} on {can_interface}.")
 
 # Thread management
 threads = {}
