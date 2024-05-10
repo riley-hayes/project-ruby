@@ -2,6 +2,8 @@ import can
 import cantools
 import time
 import yaml
+import os
+import pickle
 import threading
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -37,42 +39,58 @@ def can_bus_listener(can_interface, control_flag, db, write_queue):
         print(f"Stopped logging on {can_interface}")
 
 def process_message(message, can_interface, db, write_queue):
-    try:
-        decoded_message = db.decode_message(message.arbitration_id, message.data)
-        points = []
-        for key, value in decoded_message.items():
-            # Convert NamedSignalValue to a supported data type (int or str)
-            if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue):
-                value = value.value  # Use .value for the numerical representation, or str(value) for the string
-            point = Point("can_message").tag("interface", can_interface).tag("id_hex", f"{message.arbitration_id:08X}").field(key, value).time(time.time_ns(), WritePrecision.NS)
-            points.append(point)
-        write_queue.put(points)
-    except KeyError:
-        pass  # Optionally handle or log unknown messages
+    decoded_message = db.decode_message(message.arbitration_id, message.data)
+    points = []
+    for key, value in decoded_message.items():
+        if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue):
+            value = value.value
+        point = Point("can_message").tag("interface", can_interface).tag("id_hex", f"{message.arbitration_id:08X}").field(key, value).time(time.time_ns(), WritePrecision.NS)
+        points.append(point)
+    write_queue.put(points)
 
 def influxdb_writer(write_queue, influxdb_config):
     client = InfluxDBClient(url=influxdb_config['url'], token=influxdb_config['token'], org=influxdb_config['org'])
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    try:
-        while True:  # Continuously run
-            try:
-                if not write_queue.empty():
-                    points = []
-                    while not write_queue.empty():  # Gather all points currently in the queue
-                        points.extend(write_queue.get_nowait())
-                        write_queue.task_done()
+    offline_storage_path = 'offline_data.pkl'
 
-                    if points:
+    def restore_offline_data():
+        if os.path.exists(offline_storage_path):
+            with open(offline_storage_path, 'rb') as file:
+                while True:
+                    try:
+                        points = pickle.load(file)
                         write_api.write(influxdb_config['bucket'], influxdb_config['org'], points)
-                        print(f"Sent {len(points)} points to InfluxDB.")
-                time.sleep(5)  # Wait for 5 seconds before checking again
+                        print(f"Restored {len(points)} points from offline storage.")
+                    except EOFError:
+                        break
+            os.remove(offline_storage_path)
+
+    def save_offline(points):
+        with open(offline_storage_path, 'ab') as file:
+            pickle.dump(points, file)
+
+    restore_offline_data()
+
+    try:
+        while True:
+            try:
+                points = []
+                while not write_queue.empty():
+                    points.extend(write_queue.get_nowait())
+                    write_queue.task_done()
+
+                if points:
+                    write_api.write(influxdb_config['bucket'], influxdb_config['org'], points)
+                    print(f"Sent {len(points)} points to InfluxDB.")
+                else:
+                    time.sleep(5)
             except Exception as e:
                 print(f"Error writing to InfluxDB: {e}")
-                continue  # Continue processing in case of an error
+                save_offline(points)
+                time.sleep(60)
     finally:
         client.close()
         print("InfluxDB connection closed.")
-
 
 # Start threads based on configuration
 threads = {}
